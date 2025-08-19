@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+
+source call_bashhelper
+
+# -----------------------------------------------------------------------------
+# Help text
+function Usage {
+    cat <<USAGE
+
+---------------------------------------------------------------------------------------------------
+call_fssegment
+
+Wrapper for FreeSurfer's segment_subregions tool.
+
+This script defaults to cross-sectional segmentation of the 'hippo-amygdala' structure using
+FreeSurfer's segment_subregions script. You may specify other structures (thalamus, brainstem),
+and any additional options supported by segment_subregions.
+
+Usage:
+  call_fssegment <subject_id> [structure] [segment_subregions options]
+
+Arguments:
+  <subject_id>          FreeSurfer subject ID (must exist in \$SUBJECTS_DIR)
+  [structure]           Optional: segmentation target (default: hippo-amygdala)
+                        Options: hippo-amygdala, thalamus, brainstem
+
+Optional:
+  --relative-path       specified directory in --out-dir is considered relative to 
+                        \$SUBJECTS_DIR/<subject_id>. E.g., if '--out-dir amyg', then the output
+                        folder will be '\$SUBJECTS_DIR/<subject_id>/amyg'
+
+Optional (passed to segment_subregions):
+  --threads N           Number of threads to use
+  --suffix SUFFIX       Add custom suffix to output files
+  --debug               Keep temp files
+  --sd DIR              Override \$SUBJECTS_DIR
+  --out-dir DIR         Override default output directory
+
+Example:
+  call_fssegment sub-001
+  call_fssegment sub-015 thalamus --threads 4 --debug
+
+---------------------------------------------------------------------------------------------------
+
+USAGE
+}
+
+# -----------------------------------------------------------------------------
+# Check args
+if [[ $# -lt 1 ]]; then
+  Usage && exit 0
+fi
+
+out_dir=""
+use_relative_path=false
+
+# -----------------------------------------------------------------------------
+# Required input
+subject_id="${1}"
+shift
+
+# Optional structure argument (next argument if not a flag)
+if [[ "$1" =~ ^(hippo-amygdala|thalamus|brainstem)$ ]]; then
+  structure="$1"
+  shift
+else
+  structure="hippo-amygdala"
+fi
+
+# Remaining args to forward to segment_subregions
+extra_args=("$@")
+
+# -----------------------------------------------------------------------------
+# Resolve SUBJECTS_DIR
+SUBJECTS_DIR="${SUBJECTS_DIR:-$FS/subjects}"
+if [[ -z "${SUBJECTS_DIR}" ]]; then
+  print_error_msg "$(basename ${0})" env "SUBJECTS_DIR not set"
+  exit 1
+fi
+
+subj_dir="${SUBJECTS_DIR}/${subject_id}"
+if [[ ! -d "${subj_dir}" ]]; then
+  print_error_msg "$(basename ${0})" input "Subject directory not found: ${subj_dir}"
+  exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Add --cross if not present
+arg_str="${extra_args[*]}"
+if [[ ! "${arg_str}" =~ "--cross" ]] && [[ ! "${arg_str}" =~ "--long-base" ]]; then
+  extra_args=(--cross "${subject_id}" "${extra_args[@]}")
+fi
+
+# Extract --out-dir and check if --relative-path was specified
+for (( i=0; i<${#extra_args[@]}; i++ )); do
+  if [[ "${extra_args[$i]}" == "--out-dir" ]]; then
+    out_dir="${extra_args[$((i+1))]}"
+  elif [[ "${extra_args[$i]}" == "--relative-path" ]]; then
+    use_relative_path=true
+    unset 'extra_args[i]'  # remove --relative-path
+  fi
+done
+
+# Default --out-dir if not provided
+if [[ -z "${out_dir}" ]]; then
+  out_dir="${subj_dir}/${structure}"
+  extra_args+=(--out-dir "${out_dir}")
+else
+  # Rewrite out_dir if relative path requested
+  if [[ "$use_relative_path" == true ]]; then
+    out_dir="${subj_dir}/${out_dir}"
+    # Replace existing --out-dir with updated path
+    for (( i=0; i<${#extra_args[@]}; i++ )); do
+      if [[ "${extra_args[$i]}" == "--out-dir" ]]; then
+        extra_args[$((i+1))]="${out_dir}"
+      fi
+    done
+  fi
+fi
+
+# -----------------------------------------------------------------------------
+# Build command
+cmd=(
+  segment_subregions
+  "${structure}"
+  "${extra_args[@]}"
+)
+
+# -----------------------------------------------------------------------------
+# Print and run
+echo
+print_line -
+echo "Running segment_subregions for subject: ${subject_id}"
+echo "Structure: ${structure}"
+print_cmd "${cmd[@]}" && eval "${cmd[@]}"
+
+# -----------------------------------------------------------------------------
+# Check result
+if [[ $? -ne 0 ]]; then
+  echo
+  print_line -
+  print_error_msg "$(basename ${0})" "segment_subregions failed"
+  exit 1
+fi
+
+echo
+echo "Done"
